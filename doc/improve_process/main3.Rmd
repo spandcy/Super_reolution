@@ -1,0 +1,377 @@
+---
+title: "Project 3 - Example Main Script"
+author: "Chengliang Tang, Tian Zheng"
+output: html_notebook
+---
+
+In your final repo, there should be an R markdown file that organizes **all computational steps** for evaluating your proposed image classification framework. 
+
+This file is currently a template for running evaluation experiments of image analysis (or any predictive modeling). You should update it according to your codes but following precisely the same structure. 
+
+```{r}
+if(!require("EBImage")){
+  source("https://bioconductor.org/biocLite.R")
+  biocLite("EBImage")
+}
+
+if(!require("gbm")){
+  install.packages("gbm")
+}
+
+if(!require("foreach")){
+  install.packages("foreach")
+}
+
+if(!require("parallel")){
+  install.packages("parallel")
+}
+library("EBImage")
+library("gbm")
+library("foreach")
+library("parallel")
+```
+
+
+### Step 0: specify directories.
+
+Set the working directory to the image folder. Specify the training and the testing set. For data without an independent test/validation set, you need to create your own testing data by random subsampling. In order to obain reproducible results, set.seed() whenever randomization is used. 
+
+```{r wkdir, eval=FALSE}
+set.seed(2018)
+setwd("/Users/Yiming/Desktop/Fall2018-Proj3-Sec2--sec2proj3_grp2") 
+# here replace it with your own path or manually set it in RStudio to where this rmd file is located. 
+# use relative path for reproducibility
+```
+
+Provide directories for training images. Low-resolution (LR) image set and High-resolution (HR) image set will be in different subfolders. 
+```{r}
+train_dir <- "../data/train_set/" # This will be modified for different data sets.
+train_LR_dir <- paste(train_dir, "LR/", sep="")
+train_HR_dir <- paste(train_dir, "HR/", sep="")
+train_label_path <- paste(train_dir, "label.csv", sep="") 
+```
+
+### Step 1: set up controls for evaluation experiments.
+
+In this chunk, we have a set of controls for the evaluation experiments. 
+
++ (T/F) cross-validation on the training set
++ (number) K, the number of CV folds
++ (T/F) process features for training set
++ (T/F) run evaluation on an independent test set
++ (T/F) process features for test set
+
+```{r exp_setup}
+run.cv=TRUE # run cross-validation on the training set
+K <- 5  # number of CV folds
+run.feature.train=TRUE # process features for training set
+run.test=TRUE # run evaluation on an independent test set
+run.feature.test=TRUE # process features for test set
+```
+
+Using cross-validation or independent test set evaluation, we compare the performance of models with different specifications. In this example, we use GBM with different `depth`. In the following chunk, we list, in a vector, setups (in this case, `depth`) corresponding to models that we will compare. In your project, you might compare very different classifiers. You can assign them numerical IDs and labels specific to your project. 
+
+```{r model_setup}
+model_values <- c(4,6,8)
+model_labels = paste("GBM with depth =", model_values)
+```
+
+### Step 2: import training images class labels.
+
+We provide extra information of image label: car (0), flower (1), market (2). These labels are not necessary for your model.
+
+```{r train_label}
+extra_label <- read.csv(train_label_path, colClasses=c("NULL", NA, NA))
+```
+
+### Step 3: construct features and responses
+
+`feature.R` should be the wrapper for all your feature engineering functions and options. The function `feature( )` should have options that correspond to different scenarios for your project and produces an R object that contains features and responses that are required by all the models you are going to evaluate later. 
++ `feature.R`
+  + Input: a path for low-resolution images.
+  + Input: a path for high-resolution images.
+  + Output: an RData file that contains extracted features and corresponding responses
+
+```{r feature, message=FALSE, warning=FALSE, include=FALSE}
+source("../lib/feature_3.R")
+###Default###
+tm_feature_train <- NA
+if(run.feature.train){
+  tm_feature_train <- system.time(dat_train <- feature(train_LR_dir, train_HR_dir))
+  feat_train <- dat_train$feature
+  label_train <- dat_train$label
+}
+cat("Time for constructing default feature is ",tm_feature_train[3],"s \n")
+
+###Diagonal###
+if (run.feature.train){
+  tm_diagonal <- system.time(diagonal_feature <- feature_diagonal(train_LR_dir,train_HR_dir))
+  feat_train_d <- diagonal_feature$feature
+  label_train_d <- diagonal_feature$label
+}
+cat("Time for constructing diagonal feature is ", tm_diagonal[3], "s \n")
+
+###Canny###
+if(run.feature.train){
+  tm_canny <- system.time(canny_feature <- feature_canny(train_LR_dir,train_HR_dir))
+  feat_train_c <- canny_feature$feature
+  label_train_c <- canny_feature$label
+}
+cat("Time for constructing canny feature is ", tm_canny[3], "s \n")
+
+
+##Large neighborhood##
+if(run.feature.train){
+  tm_24 <- system.time(lfeature <- feature_24(train_LR_dir,train_HR_dir))
+  feat_train_l <- lfeature$feature
+  label_train_l <- lfeature$label
+}
+cat("Time for constructing large neighborhood feature is ",tm_24[3],"s \n")
+#save(dat_train, file="./output/feature_train.RData")
+
+
+#canny+24
+if(run.feature.train){
+  tm_c24<-system.time(c24feature<-feature_c24(train_LR_dir, train_HR_dir))
+  feat_train_c24<-c24feature$feature
+  label_train_c24<-c24feature$label
+}
+cat("Time for constructing large neighborhood feature is ",tm_c24[3],"s \n")
+```
+
+
+### Step 4: Train a classification model with training images
+Call the train model and test model from library. 
+
+`train.R` and `test.R` should be wrappers for all your model training steps and your classification/prediction steps. 
++ `train.R`
+  + Input: a path that points to the training set features and responses.
+  + Output: an RData file that contains trained classifiers in the forms of R objects: models/settings/links to external trained configurations.
++ `test.R`
+  + Input: a path that points to the test set features.
+  + Input: an R object that contains a trained classifier.
+  + Output: an R object of response predictions on the test set. If there are multiple classifiers under evaluation, there should be multiple sets of label predictions. 
+```{r loadlib}
+source("../lib/train2.R")
+source("../lib/test.R")
+```
+
+################################
+#### Model selection with cross-validation
+* Do model selection by choosing among different values of training model parameters, that is, the interaction depth for GBM in this example. 
+```{r runcv, message=FALSE, warning=FALSE}
+source("../lib/cross_validation.R")
+
+if(run.cv){
+  err_cv <- array(dim=c(length(model_values), 2))
+  for(k in 1:length(model_values)){
+    cat("k=", k, "\n")
+    err_cv[k,] <- cv.function(feat_train, label_train, model_values[k], K)
+  }
+  save(err_cv, file="../output/err_cv.RData")
+}
+```
+
+Visualize cross-validation results. 
+```{r cv_vis}
+if(run.cv){
+  load("../output/err_cv.RData")
+  plot(model_values, err_cv[,1], xlab="Interaction Depth", ylab="CV Error",
+       main="Cross Validation Error", type="n", ylim=c(0, 0.25))
+  points(model_values, err_cv[,1], col="blue", pch=16)
+  lines(model_values, err_cv[,1], col="blue")
+  arrows(model_values, err_cv[,1]-err_cv[,2], model_values, err_cv[,1]+err_cv[,2], 
+        length=0.1, angle=90, code=3)
+}
+```
+
+
+* Choose the "best"" parameter value
+```{r best_model}
+model_best=model_values[1]
+if(run.cv){
+  model_best <- model_values[which.min(err_cv[,1])]
+}
+
+par_best <- list(depth=model_best)
+```
+
+################################
+
+* Train the model with the entire training set using the selected model (model parameter) via cross-validation.
+```{r final_train,message=FALSE, include=FALSE}
+
+tm_train=NA
+#train gbm using default feature
+tm_train <- system.time(fit_train <- train_gbm(feat_train, label_train))
+save(fit_train, file="../output/fit_train.RData")
+cat("Time for training gbm using default feature", tm_train[3], "s \n")
+#train gbm using diagonal feature
+tm_train_d <- system.time(fit_train_d <- train_gbm(feat_train_d,label_train_d))
+save(fit_train_d,file='../output/fit_train_d.RData')
+cat("Time for training gbm using diagonal feature", tm_train_d[3], "s \n")
+#train gbm using canny feature
+tm_train_c <- system.time(fit_train_c <- train_gbm(feat_train_c,label_train_c))
+save(fit_train_c,file='../output/fit_train_c.RData')
+cat("Time for training gbm using canny feature", tm_train_c[3], "s \n")
+#train gbm using large neighborhood feature
+tm_train_l <- system.time(fit_train_l <- train_gbm(feat_train_l,label_train_l))
+save(fit_train_l,file='../output/fit_train_l.RData')
+cat("Time for training gbm using large neighborhood feature", tm_train_l[3], "s \n")
+
+
+# train gbm using canny+24 
+tm_train_c24<-system.time(fit_train_c24<-train_gbm(feat_train_c24,label_train_c24))
+save(fit_train_c24,file = '../output/fit_train_c24.RData')
+cat("Time for training gbm using canny+24 ", tm_train_c24[3], "s \n")
+
+
+
+
+
+###xgboost###
+#train xgboost using default feature
+tm_train_xg <- system.time(xg_train <- xgb_train(feat_train,label_train))
+save(xg_train,file='../output/xg_train.RData')
+cat('Time used to train xgboost with default feature is ',tm_train_xg[3],'s \n')
+
+#train xgboost using diagonal feature
+tm_train_xg_d <- system.time(xg_train_d <- xgb_train(feat_train_d,label_train_d))
+save(xg_train_d,file='../output/xg_train_d.RData')
+cat('Time used to train xgboost with diagonal feature is ',tm_train_xg_d[3],'s \n')
+
+#train xgboost using canny feature
+tm_train_xg_c <- system.time(xg_train_c <- xgb_train(feat_train_c,label_train_c))
+save(xg_train_c,file='../output/xg_train_c.RData')
+cat('Time used to train xgboost with canny feature is ',tm_train_xg_c[3],'s \n')
+
+#train xgboost using large neighborhood feature
+tm_train_xg_l <- system.time(xg_train_l <- xgb_train(feat_train_l,label_train_l))
+save(xg_train_l,file='../output/xg_train_l.RData')
+cat('Time used to train xgboost with large neighborhood feature is ',tm_train_xg_l[3],'s \n')
+
+#train xgboost using canny+24 feature
+tm_train_xg_c24 <- system.time(xg_train_c24 <- xgb_train(feat_train_c24,label_train_c24))
+save(xg_train_c24, file='../output/xg_train_c24.RData')
+cat('Time used to train xgboost with canny+24 feature is ',tm_train_c24[3],'s \n')
+```
+
+### Step 5: Super-resolution for test images
+Feed the final training model with the completely holdout testing data. 
++ `superResolution.R`
+  + Input: a path that points to the folder of low-resolution test images.
+  + Input: a path that points to the folder (empty) of high-resolution test images.
+  + Input: an R object that contains tuned predictors.
+  + Output: construct high-resolution versions for each low-resolution test image.
+```{r superresolution}
+source("../lib/superResolution.R")
+test_dir <- "../data/test_set/" # This will be modified for different data sets.
+test_LR_dir <- paste(test_dir, "LR/", sep="")
+test_HR_dir <- paste(test_dir, "HR/", sep="")
+```
+tm_test=NA
+if(run.test){
+  load(file="../output/fit_train.RData")
+  tm_test <- system.time(superResolution(test_LR_dir, test_HR_dir, fit_train))
+}
+```{r}
+
+###GBM
+#gbm using default feature
+if(run.test){
+  load(file='../output/fit_train.RData')
+  tm_test_d <- system.time(PSNR<-superResolution(test_LR_dir,test_HR_dir,fit_train))
+}
+cat("PSNR for gbm using default feature", PSNR, "s \n")
+#20.89188
+
+#gbm using diagonal feature
+if(run.test){
+  load(file='../output/fit_train_d.RData')
+  tm_test_d <- system.time(PSNR<-superResolution(test_LR_dir,test_HR_dir,fit_train_d))
+}
+cat("PSNR for gbm using diagonal feature", PSNR, "s \n")
+
+#19.64799
+
+#gbm using canny feature
+if(run.test){
+  load(file='../output/fit_train_c.RData')
+  tm_test_d <- system.time(PSNR<-superResolution(test_LR_dir,test_HR_dir,fit_train_c))
+}
+
+cat("PSNR for gbm using canny feature", PSNR, "s \n")
+#19.76836
+
+#gbm using large neighborhood feature
+if(run.test){
+  load(file='../output/fit_train_l.RData')
+  tm_test_l <- system.time(PSNR<-superResolution_24(test_LR_dir,test_HR_dir,fit_train_l))
+}
+cat("PSNR for gbm using large neighborhood feature", PSNR, "s \n")
+
+#19.52101
+
+
+# gbm using canny+24 
+if(run.test){
+  load(file='../output/fit_train_c24.RData')
+  tm_test_l <- system.time(PSNR<-superResolution_24(test_LR_dir,test_HR_dir,fit_train_c24))
+}
+
+cat("PSNR for gbm using canny+24 feature", PSNR, "s \n")
+#19.20425
+
+###xgboost###
+#xgboost using default feature
+if(run.test){
+  load(file='../output/xg_train.RData')
+  tm_test_xg <- system.time(PSNR<-superResolution(test_LR_dir,test_HR_dir,xg_train))
+}
+cat("xgboost using default feature", PSNR, "s \n")
+#16.07116
+
+#xgboost using diagonal feature
+if(run.test){
+  load(file='../output/xg_train_d.RData')
+  tm_test_xg_d <- system.time(PSNR<-superResolution(test_LR_dir,test_HR_dir,xg_train_d))
+}
+cat("xgboost using diagonal feature", PSNR, "s \n")
+
+#xgboost using canny feature
+if(run.test){
+  load(file='../output/xg_train_c.RData')
+  tm_test_xg_c <- system.time(PSNR<-superResolution(test_LR_dir,test_HR_dir,xg_train_c))
+}
+cat("xgboost using canny feature", PSNR, "s \n")
+
+#xgboost using large neighborhood feature
+if(run.test){
+  load(file='../output/xg_train_l.RData')
+  tm_test_xg_l <- system.time(PSNR<-superResolution_24(test_LR_dir,test_HR_dir,xg_train_l))
+}
+cat("xgboost using large neighborhood feature", PSNR, "s \n")
+
+
+#xgboost using canny+24 feature
+if(run.test){
+  load(file='../output/xg_train_c24.RData')
+  tm_test_xg_c24 <- system.time(PSNR<-superResolution_24(test_LR_dir,test_HR_dir,xg_train_24))
+}
+cat("xgboost using canny+24 feature", PSNR, "s \n")
+
+
+
+
+
+```
+
+### Summarize Running Time
+Prediction performance matters, so does the running times for constructing features and for training the model, especially when the computation resource is limited. 
+```{r running_time}
+cat("Time for constructing training features=", tm_feature_train[1], "s \n")
+cat("Time for constructing testing features=", tm_feature_test[1], "s \n")
+cat("Time for training model=", tm_train[1], "s \n")
+cat("Time for super-resolution=", tm_test[1], "s \n")
+```
+
